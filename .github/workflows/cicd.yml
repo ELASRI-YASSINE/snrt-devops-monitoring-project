@@ -1,0 +1,98 @@
+name: Monitoring Stack CI/CD
+ 
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+ 
+jobs:
+ 
+  validate:
+    name: Validate configs and scripts
+    runs-on: ubuntu-latest
+ 
+    steps:
+ 
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      - name: Validate docker-compose.yml
+        run: |
+          echo "Validating docker-compose.yml..."
+          docker compose config --quiet
+          echo "✓ docker-compose.yml is valid"
+ 
+      - name: Install promtool
+        run: |
+          PROMETHEUS_VERSION="2.51.0"
+          wget -q https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz
+          tar -xzf prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz
+          sudo mv prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool /usr/local/bin/
+          promtool --version
+ 
+      - name: Validate prometheus.yml
+        run: |
+          promtool check config prometheus/prometheus.yml
+          echo "✓ prometheus.yml is valid"
+ 
+      - name: Validate alert rules
+        run: |
+          promtool check rules prometheus/alerts.yml
+          echo "✓ alerts.yml is valid"
+ 
+      - name: Install amtool
+        run: |
+          ALERTMANAGER_VERSION="0.27.0"
+          wget -q https://github.com/prometheus/alertmanager/releases/download/v${ALERTMANAGER_VERSION}/alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz
+          tar -xzf alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz
+          sudo mv alertmanager-${ALERTMANAGER_VERSION}.linux-amd64/amtool /usr/local/bin/
+          amtool --version
+ 
+      - name: Validate alertmanager.yml
+        run: |
+          amtool check-config prometheus/alertmanager.yml
+          echo "✓ alertmanager.yml is valid"
+ 
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+ 
+      - name: Lint script_metrics.sh
+        run: |
+          shellcheck scripts/script_metrics.sh
+          echo "✓ script_metrics.sh passed shellcheck"
+ 
+      - name: Lint script_alerts.sh
+        run: |
+          shellcheck scripts/script_alerts.sh
+          echo "✓ script_alerts.sh passed shellcheck"
+ 
+      - name: Lint script_report.sh
+        run: |
+          shellcheck scripts/script_report.sh
+          echo "✓ script_report.sh passed shellcheck"
+ 
+      - name: Install yamllint
+        run: pip install yamllint --quiet
+ 
+      - name: Validate Grafana provisioning files
+        run: |
+          yamllint -d relaxed grafana/provisioning/datasources/datasource.yml
+          yamllint -d relaxed grafana/provisioning/dashboards/dashboard.yml
+          echo "✓ Grafana provisioning files are valid"
+ 
+      - name: Validation summary
+        run: |
+          echo "════════════════════════════════════════"
+          echo "  All validations passed"
+          echo "  ✓ docker-compose.yml"
+          echo "  ✓ prometheus.yml"
+          echo "  ✓ alerts.yml"
+          echo "  ✓ alertmanager.yml"
+          echo "  ✓ script_metrics.sh"
+          echo "  ✓ script_alerts.sh"
+          echo "  ✓ script_report.sh"
+          echo "  ✓ Grafana provisioning files"
+          echo "════════════════════════════════════════"
