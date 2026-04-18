@@ -142,4 +142,73 @@ jobs:
           format: table
           severity: HIGH,CRITICAL
           exit-code: 0
+  # ─────────────────────────────────────────────────────
+  # JOB 3 — BUILD & INTEGRATION TEST
+  # Start the full stack and verify all services respond
+  # Runs after validate and security-scan succeed
+  # Only on push events (not pull requests)
+  # ─────────────────────────────────────────────────────
+  build:
+    name: Build and integration test
+    runs-on: ubuntu-latest
+    needs: [validate, security-scan]
+    if: github.event_name == 'push'
+ 
+    steps:
+ 
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      - name: Build Node.js app image
+        run: |
+          docker build -t monitoring-app:latest .
+          echo "✓ Image built successfully"
+ 
+      - name: Pull monitoring images
+        run: docker compose pull --quiet
+ 
+      - name: Start monitoring stack
+        run: |
+          docker compose up -d
+          echo "Stack started — waiting for services to be ready..."
+          sleep 25
+ 
+      - name: Check Prometheus health
+        run: |
+          curl --fail http://localhost:9090/-/healthy
+          echo "✓ Prometheus is healthy"
+ 
+      - name: Check Grafana health
+        run: |
+          curl --fail http://localhost:3000/api/health
+          echo "✓ Grafana is healthy"
+ 
+      - name: Check Node Exporter
+        run: |
+          curl --fail http://localhost:9100/metrics | head -3
+          echo "✓ Node Exporter is exposing metrics"
+ 
+      - name: Check Alertmanager health
+        run: |
+          curl --fail http://localhost:9093/-/healthy
+          echo "✓ Alertmanager is healthy"
+ 
+      - name: Check Node.js app
+        run: |
+          curl --fail http://localhost:3001/
+          curl --fail http://localhost:3001/metrics | head -3
+          echo "✓ Node.js app is running and exposing metrics"
+ 
+      - name: Verify Prometheus targets
+        run: |
+          sleep 20
+          curl -s http://localhost:9090/api/v1/targets \
+            | jq '.data.activeTargets[] | {job: .labels.job, health: .health}'
+ 
+      - name: Show container status
+        run: docker compose ps
+ 
+      - name: Tear down stack
+        if: always()
+        run: docker compose down --volumes
       
