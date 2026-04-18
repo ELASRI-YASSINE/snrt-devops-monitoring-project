@@ -1,0 +1,35 @@
+# Never send these to the Docker build context
+# Keeps builds fast and images clean
+
+# Dependencies — Docker installs these fresh inside the image
+app/node_modules/
+
+# Git history — not needed inside the image
+.git/
+.gitignore
+
+# Docker files themselves
+Dockerfile
+.dockerignore
+
+# CI/CD config — not needed at runtime
+.github/
+
+# Monitoring config — mounted as volumes in docker-compose, not baked in
+prometheus/
+grafana/
+
+# Scripts — mounted as volumes or run from host
+scripts/
+
+# Logs and reports
+*.log
+*.html
+
+# Environment files — secrets must never go into images
+.env
+.env.*
+
+# Editor files
+.vscode/
+*.swp
