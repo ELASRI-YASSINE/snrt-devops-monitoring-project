@@ -96,3 +96,50 @@ jobs:
           echo "  ✓ script_report.sh"
           echo "  ✓ Grafana provisioning files"
           echo "════════════════════════════════════════"
+  # ─────────────────────────────────────────────────────
+  # JOB 2 — SECURITY SCAN
+  # Scan all Docker images for CVEs using Trivy
+  # Runs after validate succeeds
+  # ─────────────────────────────────────────────────────
+  security-scan:
+    name: Security scan with Trivy
+    runs-on: ubuntu-latest
+    needs: validate
+ 
+    steps:
+ 
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      - name: Scan Node.js app image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: node:20-alpine
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: 0
+ 
+      - name: Scan Prometheus image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: prom/prometheus:latest
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: 0
+ 
+      - name: Scan Grafana image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: grafana/grafana:latest
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: 0
+ 
+      - name: Scan Node Exporter image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: prom/node-exporter:latest
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: 0
+      
