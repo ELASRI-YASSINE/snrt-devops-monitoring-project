@@ -1,0 +1,268 @@
+name: Monitoring Stack CI/CD
+ 
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+ 
+jobs:
+ 
+  validate:
+    name: Validate configs and scripts
+    runs-on: ubuntu-latest
+ 
+    steps:
+ 
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      - name: Validate docker-compose.yml
+        run: |
+          echo "Validating docker-compose.yml..."
+          docker compose config --quiet
+          echo "✓ docker-compose.yml is valid"
+ 
+      - name: Install promtool
+        run: |
+          PROMETHEUS_VERSION="2.51.0"
+          wget -q https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz
+          tar -xzf prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz
+          sudo mv prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool /usr/local/bin/
+          promtool --version
+ 
+      - name: Validate prometheus.yml
+        run: |
+          promtool check config prometheus/prometheus.yml
+          echo "✓ prometheus.yml is valid"
+ 
+      - name: Validate alert rules
+        run: |
+          promtool check rules prometheus/alerts.yml
+          echo "✓ alerts.yml is valid"
+ 
+      - name: Install amtool
+        run: |
+          ALERTMANAGER_VERSION="0.27.0"
+          wget -q https://github.com/prometheus/alertmanager/releases/download/v${ALERTMANAGER_VERSION}/alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz
+          tar -xzf alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz
+          sudo mv alertmanager-${ALERTMANAGER_VERSION}.linux-amd64/amtool /usr/local/bin/
+          amtool --version
+ 
+      - name: Validate alertmanager.yml
+        run: |
+          amtool check-config prometheus/alertmanager.yml
+          echo "✓ alertmanager.yml is valid"
+ 
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+ 
+      - name: Lint script_metrics.sh
+        run: |
+          shellcheck scripts/script_metrics.sh
+          echo "✓ script_metrics.sh passed shellcheck"
+ 
+      - name: Lint script_alerts.sh
+        run: |
+          shellcheck scripts/script_alerts.sh
+          echo "✓ script_alerts.sh passed shellcheck"
+ 
+      - name: Lint script_report.sh
+        run: |
+          shellcheck scripts/script_report.sh
+          echo "✓ script_report.sh passed shellcheck"
+ 
+      - name: Install yamllint
+        run: pip install yamllint --quiet
+ 
+      - name: Validate Grafana provisioning files
+        run: |
+          yamllint -d relaxed grafana/provisioning/datasources/datasource.yml
+          yamllint -d relaxed grafana/provisioning/dashboards/dashboard.yml
+          echo "✓ Grafana provisioning files are valid"
+ 
+      - name: Validation summary
+        run: |
+          echo "════════════════════════════════════════"
+          echo "  All validations passed"
+          echo "  ✓ docker-compose.yml"
+          echo "  ✓ prometheus.yml"
+          echo "  ✓ alerts.yml"
+          echo "  ✓ alertmanager.yml"
+          echo "  ✓ script_metrics.sh"
+          echo "  ✓ script_alerts.sh"
+          echo "  ✓ script_report.sh"
+          echo "  ✓ Grafana provisioning files"
+          echo "════════════════════════════════════════"
+  # ─────────────────────────────────────────────────────
+  # JOB 2 — SECURITY SCAN
+  # Scan all Docker images for CVEs using Trivy
+  # Runs after validate succeeds
+  # ─────────────────────────────────────────────────────
+  security-scan:
+    name: Security scan with Trivy
+    runs-on: ubuntu-latest
+    needs: validate
+ 
+    steps:
+ 
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      - name: Scan Node.js app image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: node:20-alpine
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: 0
+ 
+      - name: Scan Prometheus image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: prom/prometheus:latest
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: 0
+ 
+      - name: Scan Grafana image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: grafana/grafana:latest
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: 0
+ 
+      - name: Scan Node Exporter image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: prom/node-exporter:latest
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: 0
+  # ─────────────────────────────────────────────────────
+  # JOB 3 — BUILD & INTEGRATION TEST
+  # Start the full stack and verify all services respond
+  # Runs after validate and security-scan succeed
+  # Only on push events (not pull requests)
+  # ─────────────────────────────────────────────────────
+  build:
+    name: Build and integration test
+    runs-on: ubuntu-latest
+    needs: [validate, security-scan]
+    if: github.event_name == 'push'
+ 
+    steps:
+ 
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      - name: Build Node.js app image
+        run: |
+          docker build -t monitoring-app:latest ./App
+          echo "✓ Image built successfully"
+ 
+      - name: Pull monitoring images
+        run: docker compose pull --quiet
+ 
+      - name: Start monitoring stack
+        run: |
+          docker compose up -d
+          echo "Stack started — waiting for services to be ready..."
+          sleep 25
+ 
+      - name: Check Prometheus health
+        run: |
+          curl --fail http://localhost:9090/-/healthy
+          echo "✓ Prometheus is healthy"
+ 
+      - name: Check Grafana health
+        run: |
+          curl --fail http://localhost:3000/api/health
+          echo "✓ Grafana is healthy"
+ 
+      - name: Check Node Exporter
+        run: |
+          curl --fail http://localhost:9100/metrics | head -3
+          echo "✓ Node Exporter is exposing metrics"
+ 
+      - name: Check Alertmanager health
+        run: |
+          curl --fail http://localhost:9093/-/healthy
+          echo "✓ Alertmanager is healthy"
+ 
+      - name: Check Node.js app
+        run: |
+          curl --fail http://localhost:3001/
+          curl --fail http://localhost:3001/metrics | head -3
+          echo "✓ Node.js app is running and exposing metrics"
+ 
+      - name: Verify Prometheus targets
+        run: |
+          sleep 20
+          curl -s http://localhost:9090/api/v1/targets \
+            | jq '.data.activeTargets[] | {job: .labels.job, health: .health}'
+ 
+      - name: Show container status
+        run: docker compose ps
+ 
+      - name: Tear down stack
+        if: always()
+        run: docker compose down --volumes
+    # ─────────────────────────────────────────────────────
+  # JOB 4 — DEPLOY TO EC2
+  # SSH into EC2 and update the running stack
+  # Only triggers on push to main branch
+  # When you merge your PR: develop → main
+  # this job will deploy automatically to production
+  #
+  # Required GitHub secrets (Settings → Secrets):
+  #   EC2_HOST    = your EC2 public IP or DNS
+  #   EC2_USER    = ubuntu or ec2-user
+  #   EC2_SSH_KEY = content of your .pem private key
+  # ─────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to AWS EC2
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+ 
+    steps:
+ 
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            echo "=== Deployment started ==="
+ 
+            # Clone repo if first time, otherwise pull latest
+            if [ ! -d ~/monitoring-infra ]; then
+              git clone https://github.com/${{ github.repository }}.git ~/monitoring-infra
+            fi
+ 
+            cd ~/monitoring-infra
+            git pull origin main
+ 
+            # Pull latest images
+            docker compose pull
+ 
+            # Restart stack with zero downtime
+            docker compose up -d --remove-orphans
+ 
+            # Wait and health check
+            sleep 15
+            curl -sf http://localhost:9090/-/healthy && echo "✓ Prometheus OK"
+            curl -sf http://localhost:3000/api/health && echo "✓ Grafana OK"
+            curl -sf http://localhost:3001/ && echo "✓ App OK"
+ 
+            docker compose ps
+            echo "=== Deployment complete ==="
+      

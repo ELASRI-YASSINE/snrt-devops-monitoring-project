@@ -1,0 +1,25 @@
+# ═══════════════════════════════════════════════════════
+# GRAFANA DASHBOARD PROVISIONING
+# Tells Grafana to auto-load dashboard JSON files
+# from the dashboards/ folder on startup
+# This is "dashboards as code" — GitOps approach
+# No clicking in the UI needed
+# ═══════════════════════════════════════════════════════
+
+apiVersion: 1
+
+providers:
+  - name: "default"
+    orgId: 1
+    type: file
+    # Prevent accidental deletion of dashboards from the UI
+    disableDeletion: false
+    # Re-check for new/updated JSON files every 30 seconds
+    updateIntervalSeconds: 30
+    # Allow editing dashboards from the Grafana UI
+    allowUiUpdates: true
+    options:
+      # Path inside the Grafana container
+      # Mapped to ./grafana/provisioning/dashboards in docker-compose
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: true

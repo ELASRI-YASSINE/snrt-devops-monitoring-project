@@ -1,0 +1,142 @@
+# ═══════════════════════════════════════════════════════
+# ALERTMANAGER CONFIGURATION
+# Defines how alerts are grouped, routed and delivered
+# ═══════════════════════════════════════════════════════
+
+global:
+  # If an alert stops firing, Alertmanager waits this long
+  # before sending a "resolved" notification
+  resolve_timeout: 5m
+
+# ═══════════════════════════════════════════════════════
+# ROUTING TREE
+# Every alert enters at the root route and flows down
+# until it matches a route — then gets sent to that receiver
+# ═══════════════════════════════════════════════════════
+route:
+  # Default receiver if no child route matches
+  receiver: "default-receiver"
+
+  # Group alerts that share these labels into one notification
+  # Instead of 5 separate emails for 5 alerts, you get 1 email
+  group_by: ["alertname", "instance", "severity", "job"]
+
+  # Wait 30s after first alert before sending
+  # In case more alerts fire at the same time — group them together
+  group_wait: 30s
+
+  # Wait 5min before sending a new notification for the same group
+  # if new alerts are added to an existing group
+  group_interval: 5m
+
+  # Wait 4h before resending the same alert if it is still firing
+  # Avoids spamming you with the same notification every 15 seconds
+  repeat_interval: 4h
+
+  # ── Child routes ──────────────────────────────────────
+  # Evaluated top to bottom — first match wins
+  routes:
+
+    # Critical alerts → sent immediately to critical receiver
+    - match:
+        severity: critical
+      receiver: "critical-receiver"
+      # Send faster than default
+      group_wait: 10s
+      # Repeat every hour for critical issues
+      repeat_interval: 1h
+      # continue: true means even after matching this route,
+      # keep checking other routes below
+      continue: false
+
+    # Warning alerts → standard receiver with normal timing
+    - match:
+        severity: warning
+      receiver: "default-receiver"
+      group_wait: 30s
+      repeat_interval: 4h
+      continue: false
+
+    # Node.js app alerts → separate receiver
+    # Useful if you want to notify a different team (dev vs ops)
+    - match:
+        job: "nodejs-app"
+      receiver: "app-receiver"
+      group_wait: 20s
+      repeat_interval: 2h
+
+# ═══════════════════════════════════════════════════════
+# RECEIVERS
+# Define HOW to deliver notifications
+# For now we use webhook (easiest to test locally)
+# In production replace with email or Slack config
+# ═══════════════════════════════════════════════════════
+receivers:
+
+  # Default receiver — handles warning alerts
+  - name: "default-receiver"
+    webhook_configs:
+      - url: "http://localhost:5001/alerts"
+        # Also send a notification when the alert resolves
+        send_resolved: true
+
+  # Critical receiver — handles critical alerts
+  # In production this would be a PagerDuty or Slack urgent channel
+  - name: "critical-receiver"
+    webhook_configs:
+      - url: "http://localhost:5001/alerts"
+        send_resolved: true
+
+  # App receiver — handles Node.js app specific alerts
+  - name: "app-receiver"
+    webhook_configs:
+      - url: "http://localhost:5001/alerts"
+        send_resolved: true
+
+  # ── Production email config (commented out) ───────────
+  # Uncomment and fill in your SMTP details to enable email alerts
+  # - name: "email-receiver"
+  #   email_configs:
+  #     - to: "devops@yourcompany.com"
+  #       from: "alertmanager@yourcompany.com"
+  #       smarthost: "smtp.gmail.com:587"
+  #       auth_username: "your@gmail.com"
+  #       auth_password: "your-app-password"
+  #       send_resolved: true
+  #       headers:
+  #         Subject: "[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}"
+
+  # ── Production Slack config (commented out) ───────────
+  # - name: "slack-receiver"
+  #   slack_configs:
+  #     - api_url: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+  #       channel: "#alerts"
+  #       send_resolved: true
+  #       title: "[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}"
+  #       text: "{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}"
+
+# ═══════════════════════════════════════════════════════
+# INHIBITION RULES
+# Suppress lower severity alerts when a higher one is already firing
+# for the same instance — avoids duplicate noise
+# ═══════════════════════════════════════════════════════
+inhibit_rules:
+
+  # If a CRITICAL alert is firing for an instance,
+  # suppress any WARNING alert for the same instance and alertname
+  # e.g. CriticalCPUUsage fires → suppress HighCPUUsage warning
+  - source_matchers:
+      - severity="critical"
+    target_matchers:
+      - severity="warning"
+    # Only inhibit if both alerts share the same instance and alertname
+    equal: ["instance", "alertname"]
+
+  # If the instance is completely DOWN,
+  # suppress all other alerts for that instance
+  # No point getting CPU/memory alerts if the server is already dead
+  - source_matchers:
+      - alertname="InstanceDown"
+    target_matchers:
+      - severity=~"warning|critical"
+    equal: ["instance"]

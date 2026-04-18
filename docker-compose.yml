@@ -1,0 +1,140 @@
+version: "3.8"
+
+# All containers share this network so they can reach each other by name
+# e.g. Prometheus reaches the app using hostname "app"
+# e.g. Grafana reaches Prometheus using hostname "prometheus"
+networks:
+  monitoring:
+    driver: bridge
+
+services:
+
+  # ─────────────────────────────────────────────
+  # NODE.JS APP
+  # Our custom REST API — built from the Dockerfile
+  # Exposes /metrics for Prometheus to scrape
+  # ─────────────────────────────────────────────
+  app:
+    build:
+      context: ./App
+      dockerfile: Dockerfile
+    container_name: nodejs-app
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - NODE_ENV=production
+    networks:
+      - monitoring
+    # Prometheus and Grafana should start before the app
+    # so the network is ready when the app tries to expose metrics
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ─────────────────────────────────────────────
+  # NODE EXPORTER
+  # Reads Linux host metrics and exposes them at :9100/metrics
+  # Prometheus scrapes this to get CPU, RAM, disk, network
+  # ─────────────────────────────────────────────
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    # Mount host system paths read-only
+    # so node-exporter can read the real machine stats
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    networks:
+      - monitoring
+
+  # ─────────────────────────────────────────────
+  # PROMETHEUS
+  # Scrapes metrics from node-exporter AND our app
+  # Stores time-series data and evaluates alert rules
+  # ─────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml
+      # Named volume so data survives container restarts
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      # Enables the /-/reload endpoint so we can reload config without restart
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    depends_on:
+      - node-exporter
+      - app
+    networks:
+      - monitoring
+
+  # ─────────────────────────────────────────────
+  # ALERTMANAGER
+  # Receives fired alerts from Prometheus
+  # Routes them to email, Slack, webhook, etc.
+  # ─────────────────────────────────────────────
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+    ports:
+      - "9093:9093"
+    networks:
+      - monitoring
+
+  # ─────────────────────────────────────────────
+  # GRAFANA
+  # Connects to Prometheus and displays dashboards
+  # Datasource and dashboards are auto-provisioned from files
+  # so no manual setup needed after docker compose up
+  # ─────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+      # Allow Grafana to load dashboards from provisioning folder
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring
+
+# Named volumes — Docker manages storage location on disk
+# Data persists even if containers stop or restart
+volumes:
+  prometheus_data:
+  grafana_data:
