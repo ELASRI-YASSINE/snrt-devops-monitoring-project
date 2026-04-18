@@ -16,7 +16,7 @@ services:
   # ─────────────────────────────────────────────
   app:
     build:
-      context: .
+      context: ./App
       dockerfile: Dockerfile
     container_name: nodejs-app
     restart: unless-stopped

@@ -1,0 +1,69 @@
+# ═══════════════════════════════════════════════════════
+# PROMETHEUS CONFIGURATION
+# ═══════════════════════════════════════════════════════
+
+global:
+  # How often Prometheus pulls metrics from all targets
+  scrape_interval: 15s
+  # How often Prometheus evaluates alert rules
+  evaluation_interval: 15s
+  # Label added to every metric scraped by this Prometheus instance
+  # Useful when you have multiple Prometheus servers
+  external_labels:
+    monitor: 'monitoring-infra'
+
+# ── Alert rules + Alertmanager ───────────────────────────
+# Tell Prometheus where the alert rules file is
+rule_files:
+  - "alerts.yml"
+
+# Tell Prometheus where to send fired alerts
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            # "alertmanager" = container name, resolved by Docker network
+            - alertmanager:9093
+
+# ═══════════════════════════════════════════════════════
+# SCRAPE CONFIGS
+# Each job defines one target Prometheus pulls metrics from
+# ═══════════════════════════════════════════════════════
+scrape_configs:
+
+  # ── Prometheus itself ──────────────────────────────────
+  # Prometheus exposes its own metrics at /metrics
+  # Useful to monitor Prometheus health and performance
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # ── Node Exporter — Linux host metrics ────────────────
+  # Scrapes CPU, RAM, disk, network, uptime from the host
+  # "node-exporter" = container name on the Docker network
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          service: 'node-exporter'
+          instance: 'ec2-host'
+          environment: 'production'
+
+  # ── Node.js App — custom application metrics ──────────
+  # Scrapes our app's /metrics endpoint
+  # This gives us HTTP request counts, durations, errors
+  # plus all default Node.js runtime metrics
+  - job_name: 'nodejs-app'
+    # Scrape the app more frequently than the default
+    # so we catch spikes and errors faster
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['app:3001']
+        labels:
+          service: 'nodejs-app'
+          instance: 'api-server'
+          environment: 'production'
+    # Only pull from the /metrics path
+    metrics_path: '/metrics'
