@@ -211,4 +211,58 @@ jobs:
       - name: Tear down stack
         if: always()
         run: docker compose down --volumes
+    # ─────────────────────────────────────────────────────
+  # JOB 4 — DEPLOY TO EC2
+  # SSH into EC2 and update the running stack
+  # Only triggers on push to main branch
+  # When you merge your PR: develop → main
+  # this job will deploy automatically to production
+  #
+  # Required GitHub secrets (Settings → Secrets):
+  #   EC2_HOST    = your EC2 public IP or DNS
+  #   EC2_USER    = ubuntu or ec2-user
+  #   EC2_SSH_KEY = content of your .pem private key
+  # ─────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to AWS EC2
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+ 
+    steps:
+ 
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            echo "=== Deployment started ==="
+ 
+            # Clone repo if first time, otherwise pull latest
+            if [ ! -d ~/monitoring-infra ]; then
+              git clone https://github.com/${{ github.repository }}.git ~/monitoring-infra
+            fi
+ 
+            cd ~/monitoring-infra
+            git pull origin main
+ 
+            # Pull latest images
+            docker compose pull
+ 
+            # Restart stack with zero downtime
+            docker compose up -d --remove-orphans
+ 
+            # Wait and health check
+            sleep 15
+            curl -sf http://localhost:9090/-/healthy && echo "✓ Prometheus OK"
+            curl -sf http://localhost:3000/api/health && echo "✓ Grafana OK"
+            curl -sf http://localhost:3001/ && echo "✓ App OK"
+ 
+            docker compose ps
+            echo "=== Deployment complete ==="
       
