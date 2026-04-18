@@ -1,0 +1,194 @@
+# ═══════════════════════════════════════════════════════
+# PROMETHEUS ALERT RULES
+# Evaluated every 15s (set in prometheus.yml)
+# When a condition stays true longer than "for:",
+# the alert fires and is sent to Alertmanager
+# ═══════════════════════════════════════════════════════
+
+groups:
+
+  # ─────────────────────────────────────────────────────
+  # GROUP 1 — HOST ALERTS
+  # Monitors the Linux machine (EC2) via Node Exporter
+  # ─────────────────────────────────────────────────────
+  - name: host_alerts
+    rules:
+
+      # ── CPU ────────────────────────────────────────────
+      # rate() calculates how fast a counter increases over time
+      # node_cpu_seconds_total{mode="idle"} = time CPU spent doing nothing
+      # 1 - idle = time CPU was actually working = usage %
+      - alert: HighCPUUsage
+        expr: |
+          (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[2m])) by (instance)) * 100 > 80
+        # Only fire if condition is true for 5 full minutes
+        # Avoids alerts on short harmless spikes
+        for: 5m
+        labels:
+          severity: warning
+          team: devops
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU is at {{ $value | printf \"%.1f\" }}% — threshold is 80%"
+
+      - alert: CriticalCPUUsage
+        expr: |
+          (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[2m])) by (instance)) * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+          team: devops
+        annotations:
+          summary: "CRITICAL CPU on {{ $labels.instance }}"
+          description: "CPU is at {{ $value | printf \"%.1f\" }}% — server may become unresponsive"
+
+      # ── MEMORY ─────────────────────────────────────────
+      # MemAvailable = memory free right now (includes cache that can be freed)
+      # (1 - available/total) * 100 = used percentage
+      - alert: HighMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: devops
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory is at {{ $value | printf \"%.1f\" }}% — threshold is 85%"
+
+      - alert: CriticalMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+          team: devops
+        annotations:
+          summary: "CRITICAL memory on {{ $labels.instance }}"
+          description: "Memory is at {{ $value | printf \"%.1f\" }}% — OOM kill risk"
+
+      # ── DISK ───────────────────────────────────────────
+      # Check available space on the root filesystem "/"
+      - alert: HighDiskUsage
+        expr: |
+          (1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"})) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: devops
+        annotations:
+          summary: "High disk usage on {{ $labels.instance }}"
+          description: "Disk at {{ $value | printf \"%.1f\" }}% on / — threshold is 80%"
+
+      - alert: CriticalDiskUsage
+        expr: |
+          (1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"})) * 100 > 90
+        for: 2m
+        labels:
+          severity: critical
+          team: devops
+        annotations:
+          summary: "CRITICAL disk on {{ $labels.instance }}"
+          description: "Disk at {{ $value | printf \"%.1f\" }}% — disk full very soon"
+
+      # ── INSTANCE DOWN ───────────────────────────────────
+      # "up" metric = 1 when Prometheus can reach the target
+      # "up" metric = 0 when the target is unreachable
+      # This fires for ANY target: node-exporter, app, prometheus itself
+      - alert: InstanceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: devops
+        annotations:
+          summary: "Instance {{ $labels.instance }} is DOWN"
+          description: "{{ $labels.job }} has been unreachable for more than 1 minute"
+
+  # ─────────────────────────────────────────────────────
+  # GROUP 2 — NODE.JS APP ALERTS
+  # Monitors our custom API using the metrics exposed at /metrics
+  # ─────────────────────────────────────────────────────
+  - name: nodejs_app_alerts
+    rules:
+
+      # ── APP DOWN ────────────────────────────────────────
+      # Fires if Prometheus cannot reach our app's /metrics endpoint
+      # More specific than InstanceDown — only targets the nodejs-app job
+      - alert: NodejsAppDown
+        expr: up{job="nodejs-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: devops
+        annotations:
+          summary: "Node.js app is DOWN"
+          description: "The API at {{ $labels.instance }} has been unreachable for 1 minute"
+
+      # ── HIGH ERROR RATE ─────────────────────────────────
+      # rate() over http_requests_total gives us requests per second
+      # We filter status_code=~"5.." to count only 5xx errors
+      # Then divide by total requests to get error percentage
+      # Fires if more than 10% of requests are returning 5xx errors
+      - alert: HighErrorRate
+        expr: |
+          (
+            rate(http_requests_total{status_code=~"5.."}[5m])
+            /
+            rate(http_requests_total[5m])
+          ) * 100 > 10
+        for: 2m
+        labels:
+          severity: warning
+          team: devops
+        annotations:
+          summary: "High HTTP error rate on {{ $labels.instance }}"
+          description: "{{ $value | printf \"%.1f\" }}% of requests are returning 5xx errors"
+
+      - alert: CriticalErrorRate
+        expr: |
+          (
+            rate(http_requests_total{status_code=~"5.."}[5m])
+            /
+            rate(http_requests_total[5m])
+          ) * 100 > 30
+        for: 1m
+        labels:
+          severity: critical
+          team: devops
+        annotations:
+          summary: "CRITICAL error rate on {{ $labels.instance }}"
+          description: "{{ $value | printf \"%.1f\" }}% of requests failing — immediate action needed"
+
+      # ── SLOW RESPONSE TIME ──────────────────────────────
+      # histogram_quantile calculates percentiles from histogram buckets
+      # p95 = 95% of requests finish within this duration
+      # Fires if the 95th percentile response time exceeds 1 second
+      # This means 5% of users are waiting more than 1 second
+      - alert: SlowResponseTime
+        expr: |
+          histogram_quantile(0.95,
+            rate(http_request_duration_seconds_bucket[5m])
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: devops
+        annotations:
+          summary: "Slow response time on {{ $labels.instance }}"
+          description: "95th percentile response time is {{ $value | printf \"%.2f\" }}s — threshold is 1s"
+
+      # ── HIGH MEMORY HEAP ────────────────────────────────
+      # prom-client exposes Node.js heap usage automatically
+      # Fires if the app is using more than 200MB of heap memory
+      # Could indicate a memory leak in the application
+      - alert: NodejsHighHeapUsage
+        expr: |
+          app_nodejs_heap_size_used_bytes > 200 * 1024 * 1024
+        for: 5m
+        labels:
+          severity: warning
+          team: devops
+        annotations:
+          summary: "High heap memory on Node.js app"
+          description: "Heap used: {{ $value | humanize }}B — possible memory leak"
