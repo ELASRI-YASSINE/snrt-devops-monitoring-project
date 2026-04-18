@@ -1,0 +1,26 @@
+# ═══════════════════════════════════════════════════════
+# GRAFANA DATASOURCE PROVISIONING
+# This file auto-configures the Prometheus datasource
+# when Grafana starts — no manual setup needed
+# ═══════════════════════════════════════════════════════
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    # "proxy" means Grafana backend queries Prometheus
+    # (not the browser directly)
+    access: proxy
+    # "prometheus" = Docker container name
+    # resolved automatically on the shared Docker network
+    url: http://prometheus:9090
+    # Use this datasource by default in all dashboards
+    isDefault: true
+    editable: true
+    jsonData:
+      # Must match scrape_interval in prometheus.yml
+      timeInterval: "15s"
+      # Enable Prometheus query hints in the Grafana UI
+      queryTimeout: "60s"
+      httpMethod: "POST"
