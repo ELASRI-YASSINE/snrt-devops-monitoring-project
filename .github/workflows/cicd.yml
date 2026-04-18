@@ -161,7 +161,7 @@ jobs:
  
       - name: Build Node.js app image
         run: |
-          docker build -t monitoring-app:latest .
+          docker build -t monitoring-app:latest ./App
           echo "✓ Image built successfully"
  
       - name: Pull monitoring images
