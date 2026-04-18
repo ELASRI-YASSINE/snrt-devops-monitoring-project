@@ -1,47 +1,81 @@
 # Infrastructure Monitoring Stack
 
-A production-grade monitoring solution built with **Prometheus**, **Grafana**, **Alertmanager**, and **Node Exporter** — fully containerized with Docker Compose and delivered via a **GitHub Actions CI/CD pipeline**.
-
----
-
-## What this project does
-
-This stack monitors a Linux host (AWS EC2) in real time:
-
-- **Collects** metrics every 15 seconds: CPU, RAM, disk, network, uptime
-- **Stores** time-series data in Prometheus (15-day retention)
-- **Visualizes** everything in Grafana dashboards
-- **Fires alerts** when thresholds are exceeded (Alertmanager)
-- **Automates** reporting and alert detection with 3 Bash scripts
-- **Delivers** changes automatically to EC2 via GitHub Actions
+A production-grade monitoring solution built with **Prometheus**, **Grafana**, **Alertmanager**, and **Node Exporter** — fully containerized with Docker Compose, monitoring a real **Node.js REST API**, and delivered via a **GitHub Actions CI/CD pipeline**.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   AWS EC2 Instance                   │
-│                                                      │
-│  ┌─────────────┐          ┌────────────────────────┐ │
-│  │Node Exporter│          │   Node.js App :3001    │ │
-│  │  :9100      │          │  GET /metrics          │ │
-│  └──────┬──────┘          └──────────┬─────────────┘ │
-│         │  scrapes                   │ scrapes        │
-│         └──────────┐   ┌────────────┘               │
-│                    ▼   ▼                             │
-│              ┌─────────────┐                        │
-│              │ Prometheus  │                        │
-│              │   :9090     │                        │
-│              └──────┬──────┘                        │
-│                     │                               │
-│            ┌────────┴────────┐                      │
-│            ▼                 ▼                      │
-│       ┌─────────┐    ┌──────────────┐               │
-│       │ Grafana │    │ Alertmanager │               │
-│       │  :3000  │    │    :9093     │               │
-│       └─────────┘    └──────────────┘               │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                    AWS EC2 Instance                      │
+│                                                          │
+│  ┌──────────────┐          ┌──────────────────────────┐  │
+│  │ Node Exporter│          │   Node.js App :3001      │  │
+│  │   :9100      │          │   GET /metrics           │  │
+│  └──────┬───────┘          └────────────┬─────────────┘  │
+│         │  scrapes every 15s            │ scrapes every 10s
+│         └──────────────┐  ┌────────────┘               │
+│                        ▼  ▼                             │
+│                 ┌──────────────┐                        │
+│                 │  Prometheus  │                        │
+│                 │    :9090     │                        │
+│                 └──────┬───────┘                        │
+│                        │                               │
+│             ┌──────────┴──────────┐                    │
+│             ▼                     ▼                    │
+│       ┌───────────┐      ┌──────────────┐              │
+│       │  Grafana  │      │ Alertmanager │              │
+│       │   :3000   │      │    :9093     │              │
+│       └───────────┘      └──────────────┘              │
+│                                                          │
+│  scripts/                                                │
+│  ├── script_metrics.sh  → live metrics in terminal      │
+│  ├── script_alerts.sh   → threshold checker + cron      │
+│  └── script_report.sh   → HTML daily report             │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## CI/CD Pipeline
+
+Every push triggers a 4-stage GitHub Actions pipeline:
+
+```
+Push to develop/main
+        │
+        ▼
+[1] Validate
+    ├── docker compose config
+    ├── promtool check config prometheus.yml
+    ├── promtool check rules alerts.yml
+    ├── amtool check-config alertmanager.yml
+    ├── shellcheck script_metrics.sh
+    ├── shellcheck script_alerts.sh
+    ├── shellcheck script_report.sh
+    └── yamllint grafana provisioning files
+        │
+        ▼
+[2] Security Scan
+    ├── Trivy scan node:20-alpine
+    ├── Trivy scan prom/prometheus
+    ├── Trivy scan grafana/grafana
+    └── Trivy scan prom/node-exporter
+        │
+        ▼
+[3] Build & Integration Test
+    ├── docker build Node.js app
+    ├── docker compose up -d
+    ├── health check all 5 services
+    └── verify Prometheus scraping targets
+        │
+        ▼ (main branch only)
+[4] Deploy to AWS EC2
+    ├── SSH into EC2
+    ├── git pull origin main
+    ├── docker compose up -d --remove-orphans
+    └── health check after deploy
 ```
 
 ---
@@ -50,10 +84,11 @@ This stack monitors a Linux host (AWS EC2) in real time:
 
 | Tool | Role | Port |
 |---|---|---|
-| Prometheus | Metrics collection & storage | 9090 |
+| Node.js app | REST API with /metrics endpoint | 3001 |
+| Prometheus | Metrics collection and storage | 9090 |
 | Node Exporter | Linux host metrics exporter | 9100 |
-| Grafana | Dashboards & visualization | 3000 |
-| Alertmanager | Alert routing & notifications | 9093 |
+| Grafana | Dashboards and visualization | 3000 |
+| Alertmanager | Alert routing and notifications | 9093 |
 
 ---
 
@@ -61,25 +96,29 @@ This stack monitors a Linux host (AWS EC2) in real time:
 
 ```
 monitoring-infra/
-├── docker-compose.yml              # Defines all 4 containers
+├── App/
+│   ├── index.js                    # Node.js REST API with prom-client
+│   ├── package.json
+│   └── Dockerfile                  # Multi-stage, non-root user, healthcheck
+├── docker-compose.yml              # All 5 services on shared network
 ├── prometheus/
-│   ├── prometheus.yml              # Scrape targets and config
-│   ├── alerts.yml                  # Alert rules (CPU, RAM, disk)
-│   └── alertmanager.yml            # Alert routing config
+│   ├── prometheus.yml              # Scrape targets: host + nodejs app
+│   ├── alerts.yml                  # 12 alert rules for host and app
+│   └── alertmanager.yml            # Routing: warning vs critical receivers
 ├── grafana/
 │   └── provisioning/
 │       ├── datasources/
 │       │   └── datasource.yml      # Auto-connects Grafana to Prometheus
 │       └── dashboards/
-│           ├── dashboard.yml       # Tells Grafana where to find JSON dashboards
-│           └── host.json           # Pre-built host metrics dashboard
+│           ├── dashboard.yml       # Dashboard loader config
+│           └── host.json           # 14-panel dashboard as code
 ├── scripts/
-│   ├── script_metrics.sh           # Query and display live metrics
-│   ├── script_alerts.sh            # Check thresholds, log warnings
-│   └── script_report.sh            # Generate HTML daily report
+│   ├── script_metrics.sh           # Live metrics: host + app via Prometheus API
+│   ├── script_alerts.sh            # Threshold checker, cron-ready
+│   └── script_report.sh            # HTML daily report generator
 └── .github/
     └── workflows/
-        └── ci-cd.yml               # GitHub Actions pipeline
+        └── ci-cd.yml               # 4-job GitHub Actions pipeline
 ```
 
 ---
@@ -90,8 +129,8 @@ monitoring-infra/
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_USERNAME/monitoring-infra.git
-cd monitoring-infra
+git clone https://github.com/ELASRI-YASSINE/snrt-devops-monitoring-project.git
+cd snrt-devops-monitoring-project
 
 # Start the full stack
 docker compose up -d
@@ -107,7 +146,20 @@ docker compose ps
 | Grafana | http://localhost:3000 | admin / admin123 |
 | Prometheus | http://localhost:9090 | — |
 | Alertmanager | http://localhost:9093 | — |
+| Node.js app | http://localhost:3001 | — |
+| App metrics | http://localhost:3001/metrics | — |
 | Node Exporter | http://localhost:9100/metrics | — |
+
+---
+
+## Node.js app endpoints
+
+```bash
+GET /              # health check — returns status and uptime
+GET /api/users     # returns list of users (simulates DB query with latency)
+GET /api/status    # detailed app status: memory, uptime, Node version
+GET /metrics       # Prometheus metrics endpoint — scraped every 10s
+```
 
 ---
 
@@ -117,62 +169,79 @@ docker compose ps
 # Make scripts executable (first time only)
 chmod +x scripts/*.sh
 
-# Display live metrics in terminal
+# Display live metrics for host and app
 ./scripts/script_metrics.sh
 
 # Check thresholds and show active alerts
 ./scripts/script_alerts.sh
 
-# Generate an HTML daily report
+# Generate HTML daily report
 ./scripts/script_report.sh
-# → output saved to /tmp/monitoring_report_YYYY-MM-DD.html
+cp /tmp/monitoring_report_$(date +%Y-%m-%d).html ~/report.html
+firefox ~/report.html
+```
+
+**Run script_alerts.sh as a cron job (every 5 minutes):**
+
+```bash
+crontab -e
+# Add this line:
+*/5 * * * * /path/to/scripts/script_alerts.sh >> /var/log/monitoring_alerts.log 2>&1
 ```
 
 ---
 
-## CI/CD pipeline (GitHub Actions)
+## Alert rules
 
-Every push to `main` triggers a 4-stage pipeline:
+### Host alerts (via Node Exporter)
 
-```
-Push to main
-    │
-    ▼
-[1] Validate       → promtool checks prometheus.yml + alerts.yml
-                   → shellcheck lints all Bash scripts
-    │
-    ▼
-[2] Security scan  → Trivy scans Docker images for CVEs
-    │
-    ▼
-[3] Build & test   → docker compose up, health checks all services
-    │
-    ▼
-[4] Deploy         → SSH into EC2, git pull, docker compose up -d
-```
+| Alert | Condition | Severity |
+|---|---|---|
+| HighCPUUsage | CPU > 80% for 5min | warning |
+| CriticalCPUUsage | CPU > 95% for 2min | critical |
+| HighMemoryUsage | Memory > 85% for 5min | warning |
+| CriticalMemoryUsage | Memory > 95% for 2min | critical |
+| HighDiskUsage | Disk > 80% for 5min | warning |
+| CriticalDiskUsage | Disk > 90% for 2min | critical |
+| InstanceDown | Target unreachable > 1min | critical |
 
-**Required GitHub secrets:**
+### Node.js app alerts (via prom-client)
+
+| Alert | Condition | Severity |
+|---|---|---|
+| NodejsAppDown | App unreachable > 1min | critical |
+| HighErrorRate | 5xx rate > 10% for 2min | warning |
+| CriticalErrorRate | 5xx rate > 30% for 1min | critical |
+| SlowResponseTime | p95 latency > 1s for 5min | warning |
+| NodejsHighHeapUsage | Heap > 200MB for 5min | warning |
+
+---
+
+## Grafana dashboard panels
+
+The auto-provisioned dashboard has 14 panels in 2 rows:
+
+**Host metrics row:**
+CPU gauge · Memory gauge · Disk gauge · Node Exporter status · Host uptime · CPU over time · Memory over time
+
+**Node.js app row:**
+App status · App uptime · Error rate · HTTP requests/sec · Response time p50/p95/p99 · Heap memory · Network traffic
+
+---
+
+## GitHub Actions secrets setup
+
+Go to: Repository → Settings → Secrets and variables → Actions
 
 | Secret | Value |
 |---|---|
 | `EC2_HOST` | Your EC2 public IP or DNS |
 | `EC2_USER` | `ubuntu` or `ec2-user` |
-| `EC2_SSH_KEY` | Content of your `.pem` private key |
-
----
-
-## Alert thresholds
-
-| Metric | Warning | Critical |
-|---|---|---|
-| CPU usage | > 80% for 5 min | > 95% for 2 min |
-| Memory usage | > 85% for 5 min | > 95% for 2 min |
-| Disk usage (/) | > 80% for 5 min | > 90% for 2 min |
-| Instance down | — | unreachable > 1 min |
+| `EC2_SSH_KEY` | Full content of your `.pem` private key |
 
 ---
 
 ## Author
 
-**El Asri Yassine** — Cloud & DevOps Engineer  
+**El Asri Yassine** — Cloud & DevOps Engineer (2nd year INPT)
 
